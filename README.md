@@ -90,12 +90,53 @@ The model has learned character names (GLOUCESTER, BISHOP OF ELY, KING HENRY VI)
 
 ---
 
+## KV Cache Inference Optimization
+
+Implemented KV Cache as an inference optimization on top of the trained model (`kv_cache.py`), without modifying `train.py`.
+
+### Why KV Cache?
+
+In naive autoregressive generation, every new token triggers a full forward pass over the entire growing sequence — recomputing K and V matrices for all previous tokens from scratch at every step. This is pure wasted computation: the context hasn't changed, only a new token has been appended.
+
+KV Cache eliminates this by storing previously computed K and V tensors per layer per head, and appending only the new token's K and V at each step. Q is always computed fresh since it represents the current query position.
+
+```
+Naive (step n):   recompute K, V for all n tokens → O(n) work per step
+KV Cache (step n): reuse cached K, V, compute only for token n → O(1) work per step
+```
+
+### Benchmark
+
+Measured on CPU, generating 500 tokens from the same trained checkpoint:
+
+| Method | Time | Tokens/sec |
+|--------|------|------------|
+| Naive autoregressive | 51.86s | 9.6 tok/s |
+| KV Cache | 14.61s | 34.2 tok/s |
+| **Speedup** | | **3.55x** |
+
+Speedup scales with sequence length — longer sequences yield larger gains since the proportion of redundant computation grows.
+
+### Implementation
+
+Subclassed `Head`, `MultiHeadAttention`, `Block`, and `GPTLanguageModel` to thread the cache through the forward pass cleanly:
+
+- **`CachedHead`** — computes K, V only for the new token, appends to cache, runs attention over full cached history
+- **`CachedMHA`** — passes each head its own cache slice, collects updated caches
+- **`CachedBlock`** — threads cache through self-attention, unchanged FFN
+- **`CachedGPT`** — initializes cache as `kv_cache[layer][head] = {'k': tensor, 'v': tensor}`, runs manual block loop during generation
+
+No changes to `train.py` — the optimization is entirely inference-side.
+
+---
+
 ## Project Structure
 
 ```
 gpt-from-scratch/
 ├── train.py          # Full training script with all model classes
-├── inference.ipynb   # Load checkpoint and generate text locally
+├── kv_cache.py       # KV Cache implementation — CachedHead, CachedMHA, CachedBlock, CachedGPT
+├── inference.ipynb   # Naive vs cached generation benchmark
 ├── gpt-dev.ipynb     # Development notebook (experimentation)
 └── README.md
 ```
@@ -111,7 +152,7 @@ python train.py
 Downloads TinyShakespeare automatically, trains for 5000 steps, saves `gpt_checkpoint.pt`.
 
 ### Inference (CPU)
-Open `inference.ipynb` and run all cells. Loads the checkpoint and generates 500 tokens of Shakespeare-like text.
+Open `inference.ipynb` and run all cells. Benchmarks both naive and KV-cached generation over 500 tokens.
 
 ---
 
@@ -121,6 +162,8 @@ Open `inference.ipynb` and run all cells. Loads the checkpoint and generates 500
 - **Pre-norm vs Post-norm** — modern GPT uses LayerNorm *before* attention (`x + Attn(LN(x))`), not after. More stable training.
 - **`register_buffer` for `tril`** — the causal mask needs to move to the correct device automatically; registering it as a buffer handles this cleanly.
 - **Shape tracking is everything** — every operation in the transformer has a specific `(B, T, C)` shape contract. Getting this right is the core implementation challenge.
+- **KV Cache is inference-only** — training uses full parallel attention over the entire sequence; caching only makes sense when generating token by token.
+- **Q is never cached** — only K and V are reused. Q represents the current query position and must always be recomputed fresh.
 
 ---
 
