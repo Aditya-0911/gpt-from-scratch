@@ -1,6 +1,6 @@
 # GPT From Scratch
 
-A character-level GPT implementation built from scratch in PyTorch, following Andrej Karpathy's ["Let's build GPT"](https://www.youtube.com/watch?v=kCc8FmEb1nY) series. Trained on the TinyShakespeare dataset to generate Shakespeare-like text.
+A character-level GPT implementation built from scratch in PyTorch, following Andrej Karpathy's ["Let's build GPT"](https://www.youtube.com/watch?v=kCc8FmEb1nY) series. Trained on the TinyShakespeare dataset to generate Shakespeare-like text. Includes KV Cache inference optimization and LoRA fine-tuning, both implemented from scratch.
 
 ---
 
@@ -130,12 +130,61 @@ No changes to `train.py` — the optimization is entirely inference-side.
 
 ---
 
+## LoRA Fine-Tuning
+
+Implemented LoRA (Low-Rank Adaptation) from scratch to fine-tune the pretrained GPT on the King James Bible (`lora.py`), without modifying `train.py`.
+
+### Why LoRA?
+
+Full fine-tuning updates all 19.7M parameters — expensive and prone to catastrophic forgetting. LoRA freezes the pretrained weights and injects two small trainable matrices A and B alongside each attention projection. The weight update becomes:
+
+```
+output = W·x + (B·A)·x · (alpha/r)
+```
+
+Where W is frozen, and only A (r × d_in) and B (d_out × r) are trained. Since weight updates during fine-tuning have low intrinsic rank, this approximation loses very little expressivity while dramatically reducing trainable parameters.
+
+### Parameter Efficiency
+
+| | Full Fine-Tuning | LoRA (r=8) |
+|---|---|---|
+| Trainable parameters | 19,776,577 | 663,552 |
+| % of total | 100% | **3.36%** |
+| Layers trained | All | Key, Query, Value projections only |
+
+### Fine-Tuning Results
+
+Fine-tuned on King James Bible for 500 steps on CPU (~13 minutes):
+
+| | Base GPT | LoRA Fine-tuned |
+|---|---|---|
+| Dataset | TinyShakespeare | King James Bible |
+| Val loss | 1.5517 | 2.4000 |
+| Steps | 5000 | 500 |
+| Trainable params | 19.7M | 663K |
+| Learning rate | 1e-3 | 1e-4 |
+
+Val loss dropped from 5.52 → 2.40 over 500 steps, showing meaningful domain adaptation with only 3.36% of parameters trained.
+
+### Implementation
+
+Subclassed `Head`, `MultiHeadAttention`, `Block`, and `GPTLanguageModel` to inject LoRA layers without touching `train.py`:
+
+- **`LoRALinear`** — wraps a frozen `nn.Linear` and adds trainable A and B matrices; forward pass is `linear(x) + (alpha/r) * x @ A.T @ B.T`
+- **`LoRAHead`** — replaces key, query, value projections with `LoRALinear`
+- **`LoRAMHA`** — uses `LoRAHead` instances, inherits forward pass unchanged
+- **`LoRABlock`** — replaces self-attention with `LoRAMHA`, FFN unchanged
+- **`LoRAGPT`** — loads pretrained checkpoint, freezes all params, unfreezes only A and B
+
+---
+
 ## Project Structure
 
 ```
 gpt-from-scratch/
 ├── train.py          # Full training script with all model classes
-├── kv_cache.py       # KV Cache implementation — CachedHead, CachedMHA, CachedBlock, CachedGPT
+├── kv_cache.py       # KV Cache — CachedHead, CachedMHA, CachedBlock, CachedGPT
+├── lora.py           # LoRA fine-tuning — LoRALinear, LoRAHead, LoRAMHA, LoRABlock, LoRAGPT
 ├── inference.ipynb   # Naive vs cached generation benchmark
 ├── gpt-dev.ipynb     # Development notebook (experimentation)
 └── README.md
@@ -154,6 +203,14 @@ Downloads TinyShakespeare automatically, trains for 5000 steps, saves `gpt_check
 ### Inference (CPU)
 Open `inference.ipynb` and run all cells. Benchmarks both naive and KV-cached generation over 500 tokens.
 
+### LoRA Fine-Tuning (CPU)
+```python
+from lora import LoRAGPT
+lora_model = LoRAGPT(r=8, lora_alpha=16)
+lora_model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+# freeze all, unfreeze A and B, then fine-tune
+```
+
 ---
 
 ## Key Learnings
@@ -164,6 +221,8 @@ Open `inference.ipynb` and run all cells. Benchmarks both naive and KV-cached ge
 - **Shape tracking is everything** — every operation in the transformer has a specific `(B, T, C)` shape contract. Getting this right is the core implementation challenge.
 - **KV Cache is inference-only** — training uses full parallel attention over the entire sequence; caching only makes sense when generating token by token.
 - **Q is never cached** — only K and V are reused. Q represents the current query position and must always be recomputed fresh.
+- **LoRA initializes B to zero** — so the LoRA contribution at the start of fine-tuning is zero, preserving the pretrained model's behavior. Only A is randomly initialized.
+- **`strict=False` for partial loading** — when loading pretrained weights into a LoRA model, `strict=False` allows the extra A and B parameters to be randomly initialized while all other weights are loaded from the checkpoint.
 
 ---
 
@@ -171,4 +230,5 @@ Open `inference.ipynb` and run all cells. Benchmarks both naive and KV-cached ge
 
 - [Andrej Karpathy — Let's build GPT from scratch](https://www.youtube.com/watch?v=kCc8FmEb1nY)
 - [Attention Is All You Need](https://arxiv.org/abs/1706.03762)
+- [LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/abs/2106.09685)
 - [TinyShakespeare Dataset](https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt)
