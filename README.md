@@ -1,6 +1,6 @@
 # GPT From Scratch
 
-A character-level GPT implementation built from scratch in PyTorch, following Andrej Karpathy's ["Let's build GPT"](https://www.youtube.com/watch?v=kCc8FmEb1nY) series. Trained on the TinyShakespeare dataset to generate Shakespeare-like text. Includes KV Cache inference optimization and LoRA fine-tuning, both implemented from scratch.
+A character-level GPT implementation built from scratch in PyTorch, following Andrej Karpathy's ["Let's build GPT"](https://www.youtube.com/watch?v=kCc8FmEb1nY) series. Trained on the TinyShakespeare dataset to generate Shakespeare-like text. Includes a BPE tokenizer, KV Cache inference optimization, and LoRA fine-tuning — all implemented from scratch.
 
 ---
 
@@ -87,6 +87,48 @@ With death's hopes from a beggast of blo
 ```
 
 The model has learned character names (GLOUCESTER, BISHOP OF ELY, KING HENRY VI), dialogue formatting, Shakespearean vocabulary, and rough sentence structure — purely from character-level prediction.
+
+---
+
+## BPE Tokenizer
+
+Implemented a Byte Pair Encoding (BPE) tokenizer from scratch (`tokenizer.py`), following the same algorithm used in GPT-2/GPT-4.
+
+### Why BPE?
+
+Character-level tokenization (used in the base GPT above) treats every character as a token — simple but inefficient. BPE learns subword merges from the corpus, producing tokens that are more semantically meaningful and require fewer tokens to represent the same text. This reduces sequence length, lowering memory and compute requirements.
+
+### Algorithm
+
+1. Start with all 256 UTF-8 byte values as the base vocabulary
+2. Count all adjacent pair frequencies in the corpus
+3. Merge the most frequent pair into a new token (ID 256, 257, ...)
+4. Repeat until target `vocab_size` is reached
+
+### Benchmark
+
+Trained on TinyShakespeare with `vocab_size=500`:
+
+| Metric | Value |
+|---|---|
+| Base vocabulary | 256 (UTF-8 bytes) |
+| Vocab size after training | 500 |
+| Number of merges | 244 |
+| Compression ratio | **1.89x** |
+| Round-trip verified | ✅ `decode(encode(text)) == text` |
+
+### Implementation
+
+```python
+from tokenizer import BPETokenizer
+
+tokenizer = BPETokenizer()
+tokenizer.train(text, vocab_size=500)
+
+encoded = tokenizer.encode("What light through yonder window breaks?")
+decoded = tokenizer.decode(encoded)
+assert decoded == "What light through yonder window breaks?"
+```
 
 ---
 
@@ -183,6 +225,7 @@ Subclassed `Head`, `MultiHeadAttention`, `Block`, and `GPTLanguageModel` to inje
 ```
 gpt-from-scratch/
 ├── train.py          # Full training script with all model classes
+├── tokenizer.py      # BPE Tokenizer — train, encode, decode from scratch
 ├── kv_cache.py       # KV Cache — CachedHead, CachedMHA, CachedBlock, CachedGPT
 ├── lora.py           # LoRA fine-tuning — LoRALinear, LoRAHead, LoRAMHA, LoRABlock, LoRAGPT
 ├── inference.ipynb   # Naive vs cached generation benchmark
@@ -199,6 +242,15 @@ gpt-from-scratch/
 python train.py
 ```
 Downloads TinyShakespeare automatically, trains for 5000 steps, saves `gpt_checkpoint.pt`.
+
+### BPE Tokenizer (CPU)
+```python
+from tokenizer import BPETokenizer
+tokenizer = BPETokenizer()
+tokenizer.train(open('input.txt').read(), vocab_size=500)
+print(tokenizer.encode("To be or not to be"))
+print(tokenizer.decode(tokenizer.encode("To be or not to be")))
+```
 
 ### Inference (CPU)
 Open `inference.ipynb` and run all cells. Benchmarks both naive and KV-cached generation over 500 tokens.
@@ -219,6 +271,8 @@ lora_model.load_state_dict(checkpoint['model_state_dict'], strict=False)
 - **Pre-norm vs Post-norm** — modern GPT uses LayerNorm *before* attention (`x + Attn(LN(x))`), not after. More stable training.
 - **`register_buffer` for `tril`** — the causal mask needs to move to the correct device automatically; registering it as a buffer handles this cleanly.
 - **Shape tracking is everything** — every operation in the transformer has a specific `(B, T, C)` shape contract. Getting this right is the core implementation challenge.
+- **BPE encode order matters** — merges must be applied in the same order they were learned during training. Using `min(stats, key=lambda p: merges.get(p, inf))` ensures this.
+- **Off-by-one in merge loop** — incrementing `i` twice (once inside the merge branch, once unconditionally) causes tokens to be silently dropped. Always increment inside each branch separately.
 - **KV Cache is inference-only** — training uses full parallel attention over the entire sequence; caching only makes sense when generating token by token.
 - **Q is never cached** — only K and V are reused. Q represents the current query position and must always be recomputed fresh.
 - **LoRA initializes B to zero** — so the LoRA contribution at the start of fine-tuning is zero, preserving the pretrained model's behavior. Only A is randomly initialized.
@@ -229,6 +283,8 @@ lora_model.load_state_dict(checkpoint['model_state_dict'], strict=False)
 ## References
 
 - [Andrej Karpathy — Let's build GPT from scratch](https://www.youtube.com/watch?v=kCc8FmEb1nY)
+- [Andrej Karpathy — Let's build the GPT tokenizer](https://www.youtube.com/watch?v=zduSFxRajkE)
 - [Attention Is All You Need](https://arxiv.org/abs/1706.03762)
 - [LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/abs/2106.09685)
+- [Neural Machine Translation of Rare Words with Subword Units (BPE paper)](https://arxiv.org/abs/1508.07909)
 - [TinyShakespeare Dataset](https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt)
