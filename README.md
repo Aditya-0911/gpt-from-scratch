@@ -330,13 +330,14 @@ Real-world Flash Attention speedups (2-4x) require a production-grade fused CUDA
 
 ```
 gpt-from-scratch/
-├── train.py              # Full training script with all model classes
-├── tokenizer.py          # BPE Tokenizer — train, encode, decode from scratch
-├── kv_cache.py           # KV Cache — CachedHead, CachedMHA, CachedBlock, CachedGPT
-├── lora.py               # LoRA fine-tuning — LoRALinear, LoRAHead, LoRAMHA, LoRABlock, LoRAGPT
-├── flash_attention.py    # Flash Attention — naive, PyTorch tiled, Triton kernel
-├── inference.ipynb       # Naive vs cached generation benchmark
-├── gpt-dev.ipynb         # Development notebook (experimentation)
+├── train.py                  # Full training script with all model classes
+├── tokenizer.py              # BPE Tokenizer — train, encode, decode from scratch
+├── kv_cache.py               # KV Cache — CachedHead, CachedMHA, CachedBlock, CachedGPT
+├── lora.py                   # LoRA fine-tuning — LoRALinear, LoRAHead, LoRAMHA, LoRABlock, LoRAGPT
+├── Flash_Attn.ipynb          # Flash Attention — naive baseline + PyTorch tiled implementation
+├── triton-tutorials.ipynb    # Triton tutorials (vector add, fused softmax) + Flash Attention Triton kernel
+├── inference.ipynb           # Naive vs cached generation benchmark
+├── gpt-dev.ipynb             # Development notebook (experimentation)
 └── README.md
 ```
 
@@ -371,15 +372,9 @@ lora_model.load_state_dict(checkpoint['model_state_dict'], strict=False)
 ```
 
 ### Flash Attention (requires GPU)
-```python
-from flash_attention import naive_attention, flash_attention_triton
+Open `Flash_Attn.ipynb` for the naive baseline and PyTorch tiled implementation with correctness verification and memory benchmarks.
 
-Q = torch.randn(1, 1, 1024, 64).cuda()
-K = torch.randn(1, 1, 1024, 64).cuda()
-V = torch.randn(1, 1, 1024, 64).cuda()
-
-out = flash_attention_triton(Q, K, V, tile_size=16)
-```
+Open `triton-tutorials.ipynb` for the Triton kernel implementation — includes the two introductory Triton tutorials (vector add, fused softmax) followed by the full Flash Attention Triton kernel with correctness check and memory benchmark.
 
 ---
 
